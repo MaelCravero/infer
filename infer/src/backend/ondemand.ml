@@ -302,7 +302,42 @@ let error_if_ondemand_analysis_during_replay ~from_file_analysis caller_summary 
       ()
 
 
-let analyze_callee exe_env ~lazy_payloads ?specialization ?caller_summary
+let rec analyze_proc ~specialization ~exe_env ~callee_pname ~caller_summary ~callee_pdesc =
+  let run_analysis () =
+    let previous_global_state = AnalysisGlobalState.save () in
+    AnalysisGlobalState.initialize callee_pdesc ;
+    protect
+      ~f:(fun () ->
+        (* preload tenv to avoid tainting preanalysis timing with IO *)
+        let tenv = Exe_env.get_proc_tenv exe_env callee_pname in
+        Timer.time Preanalysis
+          ~f:(fun () ->
+            let caller_pname = caller_summary >>| fun summ -> summ.Summary.proc_name in
+            Some (run_proc_analysis exe_env tenv ?specialization ?caller_pname callee_pdesc) )
+          ~on_timeout:(fun span ->
+            L.debug Analysis Quiet
+              "TIMEOUT after %fs of CPU time analyzing %a:%a, outside of any checkers \
+               (pre-analysis timeout?)@\n"
+              span SourceFile.pp (Procdesc.get_attributes callee_pdesc).translation_unit Procname.pp
+              callee_pname ;
+            None ) )
+      ~finally:(fun () -> AnalysisGlobalState.restore previous_global_state)
+  in
+  match Config.scheduler with
+  | SyntacticCallGraph | File ->
+      (* Schedulers using no locking mechanism can just compute the result. *)
+      run_analysis ()
+  | Restart when Int.equal Config.jobs 1 ->
+      (* No locking if working sequentially, just compute the result. *)
+      run_analysis ()
+  | _ ->
+      (* Restart forbids having a procedure analyzed by two jobs at the same time, hence lock_exn
+         might raise Exception.ProcnameAlreadyLocked if the lock is already taken. Otherwise, it
+         takes the lock. *)
+      RestartScheduler.with_lock ~f:run_analysis callee_pname
+
+
+and analyze_callee exe_env ~lazy_payloads ?specialization ?caller_summary
     ?(from_file_analysis = false) callee_pname =
   let cycle_detected = in_mutual_recursion_cycle ~caller_summary ~callee:callee_pname in
   register_callee ~cycle_detected ?caller_summary callee_pname ;
@@ -312,26 +347,7 @@ let analyze_callee exe_env ~lazy_payloads ?specialization ?caller_summary
       error_if_ondemand_analysis_during_replay ~from_file_analysis caller_summary callee_pname ;
       Procdesc.load callee_pname
       >>= fun callee_pdesc ->
-      RestartScheduler.with_lock callee_pname ~f:(fun () ->
-          let previous_global_state = AnalysisGlobalState.save () in
-          AnalysisGlobalState.initialize callee_pdesc ;
-          protect
-            ~f:(fun () ->
-              (* preload tenv to avoid tainting preanalysis timing with IO *)
-              let tenv = Exe_env.get_proc_tenv exe_env callee_pname in
-              Timer.time Preanalysis
-                ~f:(fun () ->
-                  let caller_pname = caller_summary >>| fun summ -> summ.Summary.proc_name in
-                  Some (run_proc_analysis exe_env tenv ?specialization ?caller_pname callee_pdesc)
-                  )
-                ~on_timeout:(fun span ->
-                  L.debug Analysis Quiet
-                    "TIMEOUT after %fs of CPU time analyzing %a:%a, outside of any checkers \
-                     (pre-analysis timeout?)@\n"
-                    span SourceFile.pp (Procdesc.get_attributes callee_pdesc).translation_unit
-                    Procname.pp callee_pname ;
-                  None ) )
-            ~finally:(fun () -> AnalysisGlobalState.restore previous_global_state) )
+      analyze_proc ~specialization ~exe_env ~callee_pname ~caller_summary ~callee_pdesc
     in
     match (Summary.OnDisk.get ~lazy_payloads callee_pname, specialization) with
     | (Some _ as summ_opt), None ->
