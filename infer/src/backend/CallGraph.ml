@@ -155,5 +155,26 @@ let fold_flagged graph ~f =
   NodeMap.fold (fun _id node acc -> if node.Node.flag then f node acc else acc) graph.node_map
 
 
+let compare_by_id lhs rhs =
+  let open Node in
+  let a = Procname.to_unique_id lhs.pname in
+  let b = Procname.to_unique_id rhs.pname in
+  String.compare a b
+
+
+let iter_vertex graph ~f =
+  NodeMap.fold (fun _ pname acc -> pname :: acc) graph.node_map []
+  |> List.sort ~compare:compare_by_id |> List.iter ~f
+
+
+let iter_succ graph (node : Node.t) ~f =
+  match NodeMap.find_opt graph.node_map node.id with
+  | None ->
+      ()
+  | Some succ ->
+      List.filter_map succ.successors ~f:(NodeMap.find_opt graph.node_map)
+      |> List.sort ~compare:compare_by_id |> List.iter ~f
+
+
 (** choose some reasonable minimum capacity that also is a prime number *)
 let default_initial_capacity = 1009

@@ -31,7 +31,7 @@ type build_system =
   | BRebar3
   | BXcode
 
-type scheduler = File | Restart | SyntacticCallGraph [@@deriving equal]
+type scheduler = File | Restart | SyntacticCallGraph | Components [@@deriving equal]
 
 val string_of_scheduler : scheduler -> string
 

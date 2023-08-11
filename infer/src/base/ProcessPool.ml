@@ -251,6 +251,40 @@ let send_work_to_child pool slot =
   if not throttled then send_work_to_child pool slot
 
 
+(** This file is used by the ComponentScheduler in order to properly compute the number of inactive
+    worker processes. *)
+let nb_idle_children_file = Config.results_dir ^/ "idle_children"
+
+(** Retry a function, specifically for reading and writing to files in cases of potential data
+    races. *)
+let rec retry ?(times = 5) ?(delay = 0.02) f =
+  try f ()
+  with e ->
+    if times > 0 then (
+      ignore (Unix.nanosleep delay) ;
+      retry ~times:(times - 1) ~delay f )
+    else raise e
+
+
+let get_nb_idle_children () : int =
+  retry (fun () -> In_channel.with_file nb_idle_children_file ~f:Marshal.from_channel)
+
+
+(** Log number of idle children for ComponentScheduler. *)
+let log_idle_children pool =
+  match Config.scheduler with
+  | Components ->
+      retry (fun () ->
+          Out_channel.with_file nb_idle_children_file ~f:(fun oc ->
+              let nb =
+                Array.fold pool.children_states ~init:0 ~f:(fun acc state ->
+                    match state with Idle -> acc + 1 | _ -> acc )
+              in
+              Marshal.to_channel oc nb [] ) )
+  | _ ->
+      ()
+
+
 (** main dispatch function that responds to messages from worker processes and updates the taskbar
     periodically *)
 let process_updates pool buffer =
@@ -282,6 +316,7 @@ let process_updates pool buffer =
            TaskBar.set_remaining_tasks pool.task_bar (pool.tasks.remaining_tasks ()) ;
            TaskBar.update_status pool.task_bar ~slot (Mtime_clock.now ()) ?heap_words "idle" ;
            pool.children_states.(slot) <- Idle ) ;
+  log_idle_children pool ;
   (* try to schedule more work if there are idle workers *)
   if not (pool.tasks.is_empty ()) then
     Array.iteri pool.children_states ~f:(fun slot state ->

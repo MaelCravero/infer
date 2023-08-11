@@ -54,5 +54,13 @@ val node_of_id : t -> int -> Node.t option
 val fold_flagged : t -> f:(Node.t -> 'a -> 'a) -> 'a -> 'a
 (** perform a fold over the nodes in the graph with flag set to true *)
 
+val iter_vertex : t -> f:(Node.t -> unit) -> unit
+(** iterate on all vertices in a sorted order; stable between runs as long as procedure unique ids
+    are unchanged *)
+
+val iter_succ : t -> Node.t -> f:(Node.t -> unit) -> unit
+(** iterate on all successors of a node in a sorted order; stable between runs as long as procedure
+    unique ids are unchanged *)
+
 val default_initial_capacity : int
 (** reasonable minimum capacity for the graph that is prime *)

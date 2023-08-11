@@ -1678,7 +1678,7 @@ OPTIONS
            Interchange Format) in infer-out/report.sarif (Conversely:
            --no-sarif)           See also infer-run(1).
 
-       --scheduler { file | restart | callgraph }
+       --scheduler { file | restart | callgraph | components }
            Specify the scheduler used for the analysis phase:           - file: schedule one job per file
            - callgraph: schedule one job per procedure, following the
            syntactic call graph. Usually faster than "file".

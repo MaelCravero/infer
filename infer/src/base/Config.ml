@@ -45,10 +45,15 @@ type build_system =
   | BXcode
 [@@deriving compare, equal]
 
-type scheduler = File | Restart | SyntacticCallGraph [@@deriving equal]
+type scheduler = File | Restart | SyntacticCallGraph | Components [@@deriving equal]
 
 (** association list used to both pretty-print and parse symbols from the command line *)
-let scheduler_symbols = [("file", File); ("restart", Restart); ("callgraph", SyntacticCallGraph)]
+let scheduler_symbols =
+  [ ("file", File)
+  ; ("restart", Restart)
+  ; ("callgraph", SyntacticCallGraph)
+  ; ("components", Components) ]
+
 
 let string_of_scheduler scheduler =
   List.Assoc.find_exn (List.Assoc.inverse scheduler_symbols) ~equal:equal_scheduler scheduler

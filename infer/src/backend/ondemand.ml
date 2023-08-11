@@ -93,7 +93,7 @@ let () =
 (** reference to log errors only at the innermost recursive call *)
 let logged_error = ref false
 
-let update_taskbar proc_name_opt source_file_opt =
+let update_taskbar ?(stalled = false) proc_name_opt source_file_opt =
   let t0 = Mtime_clock.now () in
   let status =
     match (proc_name_opt, source_file_opt) with
@@ -102,7 +102,8 @@ let update_taskbar proc_name_opt source_file_opt =
           if !nesting <= max_nesting_to_print then String.make !nesting '>'
           else Printf.sprintf "%d>" !nesting
         in
-        F.asprintf "%s%a: %a" nesting SourceFile.pp src_file Procname.pp pname
+        let stalled = if stalled then " (stalled)" else "" in
+        F.asprintf "%s%a: %a%s" nesting SourceFile.pp src_file Procname.pp pname stalled
     | Some pname, None ->
         Procname.to_string pname
     | None, Some src_file ->
@@ -302,7 +303,8 @@ let error_if_ondemand_analysis_during_replay ~from_file_analysis caller_summary 
       ()
 
 
-let rec analyze_proc ~specialization ~exe_env ~callee_pname ~caller_summary ~callee_pdesc =
+let rec analyze_proc ~specialization ~exe_env ~lazy_payloads ~callee_pname ~caller_summary
+    ~callee_pdesc =
   let run_analysis () =
     let previous_global_state = AnalysisGlobalState.save () in
     AnalysisGlobalState.initialize callee_pdesc ;
@@ -327,9 +329,49 @@ let rec analyze_proc ~specialization ~exe_env ~callee_pname ~caller_summary ~cal
   | SyntacticCallGraph | File ->
       (* Schedulers using no locking mechanism can just compute the result. *)
       run_analysis ()
-  | Restart when Int.equal Config.jobs 1 ->
+  | (Components | Restart) when Int.equal Config.jobs 1 ->
       (* No locking if working sequentially, just compute the result. *)
       run_analysis ()
+  | Components
+    when let dst = callee_pname in
+         let src = caller_summary >>| fun summ -> summ.Summary.proc_name in
+         Option.is_some src && ComponentScheduler.is_edge_masked (Caml.Option.get src, dst) ->
+      None
+  | Components ->
+      (* To report stalled processes, update taskbar before and after locking. Jobs will appear as
+         stalled during the duration of the call to lock and marked as running afterwards, displaying
+         the correct times. We need to increment and decrement [nesting] in order to have the correct
+         offset, mimicking [preprocess] and [postprocess] in [run_proc_analysis]. *)
+      incr nesting ;
+      let attr = Procdesc.get_attributes callee_pdesc in
+      let source_file = attr.ProcAttributes.translation_unit in
+      update_taskbar (Some callee_pname) (Some source_file) ~stalled:true ;
+      ComponentScheduler.lock callee_pname ;
+      update_taskbar (Some callee_pname) (Some source_file) ;
+      decr nesting ;
+      let callee_summary =
+        (* We have managed to take the lock, but the procedure may have been analyzed by
+           another process in the meantime. Check if there is still work to do. *)
+        match (Summary.OnDisk.get ~lazy_payloads callee_pname, specialization) with
+        | None, None ->
+            if procedure_should_be_analyzed callee_pname then run_analysis () else None
+        | res, None ->
+            res
+        | _, _ ->
+            run_analysis ()
+      in
+      ComponentScheduler.unlock callee_pname ;
+      (* Some static callees are not reached during analysis but still need to be analyzed in order
+         to complete the analysis of the current SCC. *)
+      ( match ComponentScheduler.next_to_cleanup () with
+      | None ->
+          ()
+      | Some pname ->
+          (* [analyze_callee] will recursively end up calling [analyze_proc], so if some
+             procedures have still not been reached during the analysis of [pname], they will be
+             returned by [next_to_cleanup] and we repeat the process. *)
+          ignore @@ analyze_callee exe_env ~lazy_payloads ?caller_summary:None pname ) ;
+      callee_summary
   | _ ->
       (* Restart forbids having a procedure analyzed by two jobs at the same time, hence lock_exn
          might raise Exception.ProcnameAlreadyLocked if the lock is already taken. Otherwise, it
@@ -347,7 +389,8 @@ and analyze_callee exe_env ~lazy_payloads ?specialization ?caller_summary
       error_if_ondemand_analysis_during_replay ~from_file_analysis caller_summary callee_pname ;
       Procdesc.load callee_pname
       >>= fun callee_pdesc ->
-      analyze_proc ~specialization ~exe_env ~callee_pname ~caller_summary ~callee_pdesc
+      analyze_proc ~specialization ~exe_env ~lazy_payloads ~callee_pname ~caller_summary
+        ~callee_pdesc
     in
     match (Summary.OnDisk.get ~lazy_payloads callee_pname, specialization) with
     | (Some _ as summ_opt), None ->

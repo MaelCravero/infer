@@ -186,7 +186,9 @@ let tasks_generator_builder_for replay_call_graph_opt sources =
     | Restart ->
         RestartScheduler.make sources
     | SyntacticCallGraph ->
-        SyntacticCallGraph.make sources )
+        SyntacticCallGraph.make sources
+    | Components ->
+        ComponentScheduler.make sources )
 
 
 let analyze replay_call_graph source_files_to_analyze =

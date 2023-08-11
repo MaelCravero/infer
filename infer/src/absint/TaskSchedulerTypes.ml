@@ -11,3 +11,6 @@ type target =
   | File of SourceFile.t
   | ProcUID of string
       (** matches primary key of [procedures] and [specs] tables; see [Database.ml] *)
+[@@deriving compare, equal]
+
+type t = target [@@deriving compare, equal]

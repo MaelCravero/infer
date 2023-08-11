@@ -60,6 +60,9 @@ module Worker : sig
   (** returns the number that matches the index of the worker in the array of final results *)
 end
 
+val get_nb_idle_children : unit -> int
+(** Get the number of children currently idle. Used by ComponentScheduler. *)
+
 val create :
      jobs:int
   -> child_prologue:(Worker.id -> unit)
